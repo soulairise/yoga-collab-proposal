@@ -1,0 +1,63 @@
+name: 공개 배포 자동 만료
+
+# 만료 시각이 지나면 Pages 사이트를 삭제하고 파일을 지웁니다.
+# GitHub 서버에서 실행되므로 로컬 맥이 꺼져 있어도 동작합니다.
+on:
+  schedule:
+    - cron: '0 */3 * * *'      # 3시간마다 만료 여부 확인
+  workflow_dispatch:            # 수동 즉시 실행도 가능
+
+permissions:
+  contents: write
+  pages: write
+
+env:
+  EXPIRES_AT: '2026-08-01T14:00:00Z'   # = 2026-08-01 23:00 KST
+
+jobs:
+  expire:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 만료 시각 확인
+        id: check
+        run: |
+          now=$(date -u +%s)
+          exp=$(date -u -d "$EXPIRES_AT" +%s)
+          echo "현재 $(date -u -d @$now) / 만료 $EXPIRES_AT"
+          if [ "$now" -ge "$exp" ]; then
+            echo "expired=true" >> "$GITHUB_OUTPUT"
+            echo "만료됨 → 배포 종료 진행"
+          else
+            echo "expired=false" >> "$GITHUB_OUTPUT"
+            echo "아직 유효 — $(( (exp - now) / 3600 ))시간 남음"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.expired == 'true'
+
+      - name: Pages 사이트 삭제
+        if: steps.check.outputs.expired == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api --method DELETE "repos/${{ github.repository }}/pages"
+
+      - name: 제안서 파일 제거 후 커밋
+        if: steps.check.outputs.expired == 'true'
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          rm -rf index.html assets
+          cat > index.html <<'HTML'
+          <!doctype html><html lang="ko"><head><meta charset="utf-8">
+          <meta name="robots" content="noindex, nofollow">
+          <title>공개 기간이 종료되었습니다</title></head>
+          <body style="font-family:system-ui,sans-serif;background:#f6f4ef;color:#2f2b27;
+            display:grid;place-items:center;height:100vh;margin:0;text-align:center">
+          <div><p style="font-size:1.1rem">이 문서의 공개 기간이 종료되었습니다.</p>
+          <p style="color:#6b645b;font-size:.9rem">소울매트 · 소울라이즈</p></div>
+          </body></html>
+          HTML
+          git add -A
+          git commit -m "만료: 공개 배포 종료 (자동)" || exit 0
+          git push
